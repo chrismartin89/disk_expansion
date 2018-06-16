@@ -1,0 +1,134 @@
+---
+
+#In the kickstart - 
+# two partitions - root (10GB) and data (10GB)
+#
+# two volume groups - vg_root and vg_data
+#
+# three logical groups - lv_root and lv_var (both belong to vg_root and lv_data belongs to vg_data
+#
+#lv_var = 500mb
+
+- hosts: localhost
+  vars:
+    data_disk_size: 40
+  tasks:
+
+##### Set disk facts #####
+#
+  - name: Get disk info
+    parted:
+      device: /dev/sdb
+      unit: GB
+    register: disk_data
+
+  - name: Set fact for the total disk size
+    set_fact: disk_data_size="{{ disk_data.disk.size|int }}"
+  - debug: msg="The size of the disk is {{ disk_data_size }}"
+  
+  #Keep for now. 
+#  - name: Set fact for the number of paritions on the disk
+#    set_fact: number_of_partitions="{{ disk.partitions|count }}"
+#  - debug: msg="This disk has {{ number_of_partitions }} partitions"
+
+#  - set_fact: last_part_number="{{ number_of_partitions|int - 1 }}"  
+#  - debug: msg="The last partition number is {{ last_part_number }}"
+
+
+  - fail: msg="The disk is not big enough for the data partition"
+    when: disk_data_size|int <= data_disk_size|int
+
+  - name: Set fact for the start of the new data parition
+    set_fact: last_part_size_data="{{ disk_data.partitions[1].end}}"
+ 
+  - name: Set fact for the total data size
+    set_fact: total_data_size="{{ last_part_size_data|int +  data_disk_size|int - 10 }}"
+
+  - name: Add new disk to extend data
+    parted:
+      device: /dev/sdb
+      number: 3
+      part_start: "{{ last_part_size_data }}GB" 
+      part_end: "{{ total_data_size }}GB" 
+      unit: GB
+      flags: [ lvm ]
+      align: optimal
+      state: present
+
+
+  - name: Get disk info
+    parted:
+      device: /dev/sdb
+      unit: GB
+    register: disk_root
+
+  - name: Set fact for the start of the new data parition
+    set_fact: last_part_size_root="{{ disk_root.partitions[2].end}}"
+
+- name: Add new disk to extend root
+    parted:
+      device: /dev/sdb
+      number: 4
+      part_start: "{{ last_part_size_root }}GB"
+      unit: GB
+      flags: [ lvm ]
+      align: optimal
+      state: present
+
+##### Start growing the various logical volumes
+
+  - name: Create the filesystem for the data disk
+    filesystem:
+      fstype: xfs
+      dev: /dev/sdb3
+
+  - name: Create the filesystem for the root disk
+    filesystem:
+      fstype: xfs
+      dev: /dev/sdb4
+
+
+  - name: Expand vg_data
+    lvg:
+      vg: vg_data
+      pvs: /dev/sdb2,/dev/sdb3
+
+  - name: Expand vg_root
+    lvg:
+      vg: vg_root
+      pvs: /dev/sdb1,/dev/sdb4
+
+  - name: Expand lv_data
+    lvol:
+      vg: vg_data
+      lv: lv_data
+      size: +100%FREE
+
+  - name: Expand lv_root
+    lvol:
+      vg: vg_root
+      lv: lv_var
+      size: +25%FREE
+ - name: Expand lv_var
+    lvol:
+      vg: vg_root
+      lv: lv_root
+      size: +100%FREE
+
+  - name: Resize lv_var
+    filesystem:
+      fstype: xfs
+      dev: /dev/mapper/vg_root-lv_var
+      resizefs: yes
+
+  - name: Resize lv_root
+    filesystem:
+      fstype: xfs
+      dev: /dev/mapper/vg_root-lv_root
+      resizefs: yes
+
+  - name: Resize lv_data
+    filesystem:
+      fstype: xfs
+      dev: /dev/mapper/vg_data-lv_data
+      resizefs: yes
